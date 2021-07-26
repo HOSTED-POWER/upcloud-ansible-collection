@@ -18,7 +18,7 @@ DOCUMENTATION = r'''
         plugin:
             description: marks this as an instance of the "upcloud" plugin
             required: true
-            choices: ["upcloud"]
+            choices: ["upcloud", "community.upcloud.upcloud"]
         username:
             description: UpCloud API username.
             required: false
@@ -316,4 +316,4 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
         self._read_config_data(path)
 
-        self._populate()
+        self._populate(inventory, loader, path, cache)
