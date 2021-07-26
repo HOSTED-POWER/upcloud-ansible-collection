@@ -94,6 +94,7 @@ from ansible.errors import AnsibleError
 from ansible.module_utils._text import to_native
 from ansible.plugins.inventory import BaseInventoryPlugin, Constructable
 from ansible.release import __version__
+from ansible.vars.fact_cache import FactCache
 
 try:
     import upcloud_api
@@ -252,11 +253,34 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             path.endswith(("upcloud.yaml", "upcloud.yml"))
         )
 
-    def _populate(self):
+    def get_all_host_vars(self, host, loader, sources):
+        ''' requires host object '''
+        return combine_vars(self.host_groupvars(host, loader, sources), self.host_vars(host, loader, sources))
+
+    def host_vars(self, host, loader, sources):
+        ''' requires host object '''
+        hvars = host.get_vars()
+
+        if self.get_option('use_vars_plugins'):
+            hvars = combine_vars(hvars, get_vars_from_inventory_sources(loader, sources, [host], 'all'))
+
+        return hvars
+
+    def _populate(inventory, loader, path, cache):
         self._initialize_upcloud_client()
         self._test_upcloud_credentials()
         self._get_servers()
         self._filter_servers()
+
+        sources = []
+        try:
+            sources = inventory.processed_sources
+        except AttributeError:
+            if self.get_option('use_vars_plugins'):
+                raise AnsibleOptionsError("The option use_vars_plugins requires ansible >= 2.11.")
+
+        strict = self.get_option('strict')
+        fact_cache = FactCache()
 
         # Add 'upcloud' as a top group
         self.inventory.add_group(group="upcloud")
@@ -265,17 +289,24 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             self.inventory.add_host(server.hostname, group="upcloud")
             self._set_server_attributes(server)
 
-            strict = self.get_option('strict')
+            # get available variables to templar
+            hostvars = self.get_all_host_vars(self.servers[server], loader, sources)
+            if host in fact_cache:  # adds facts if cache is active
+                hostvars = combine_vars(hostvars, fact_cache[host])
 
             # Composed variables
-            self._set_composite_vars(self.get_option('compose'), self.inventory.get_host(server.hostname).get_vars(),
-                                     server.hostname, strict=strict)
+            self._set_composite_vars(self.get_option('compose'), hostvars, server.hostname, strict=strict)
+
+            # refetch host vars in case new ones have been created above
+            hostvars = self.get_all_host_vars(self.servers[server], loader, sources)
+            if host in self._cache:  # adds facts if cache is active
+                hostvars = combine_vars(hostvars, self._cache[host])
 
             # Complex groups based on jinja2 conditionals, hosts that meet the conditional are added to group
-            self._add_host_to_composed_groups(self.get_option('groups'), {}, server.hostname, strict=strict)
+            self._add_host_to_composed_groups(self.get_option('groups'), hostvars, server.hostname, strict=strict, fetch_hostvars=False)
 
             # Create groups based on variable values and add the corresponding hosts to it
-            self._add_host_to_keyed_groups(self.get_option('keyed_groups'), {}, server.hostname, strict=strict)
+            self._add_host_to_keyed_groups(self.get_option('keyed_groups'), hostvars, server.hostname, strict=strict, fetch_hostvars=False)
 
     def parse(self, inventory, loader, path, cache=True):
         super(InventoryModule, self).parse(inventory, loader, path, cache)
